@@ -1,6 +1,6 @@
 from sqlalchemy import String, Integer, Float, Date, DateTime, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime
+from datetime import datetime, date
 from .database import Base
 
 class User(Base):
@@ -29,7 +29,7 @@ class Sale(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     product_id: Mapped[str] = mapped_column(String(80), index=True)
-    date: Mapped[datetime.date] = mapped_column(Date, index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
     quantity_sold: Mapped[float] = mapped_column(Float)
     unit_price: Mapped[float] = mapped_column(Float, default=0)
 
@@ -48,7 +48,7 @@ class Forecast(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     product_id: Mapped[str] = mapped_column(String(80), index=True)
-    forecast_date: Mapped[datetime.date] = mapped_column(Date)
+    forecast_date: Mapped[date] = mapped_column(Date)
     predicted_demand: Mapped[float] = mapped_column(Float)
     model_name: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
