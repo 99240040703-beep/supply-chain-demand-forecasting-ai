@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from .database import Base, engine, get_db
 from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder
-from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn
+from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn, PurchaseOrderIn, PurchaseOrderStatusIn
 from .security import hash_password, verify_password, create_token, current_user
 from .config import settings
 from .ml import preprocess, train_and_forecast
