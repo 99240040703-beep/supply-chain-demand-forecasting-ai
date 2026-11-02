@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from .database import Base, engine, get_db
-from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder, ForecastMetric
+from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder, ForecastMetric, ChatMessage
 from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn, PurchaseOrderIn, PurchaseOrderStatusIn
 from .security import hash_password, verify_password, create_token, current_user
 from .config import settings
@@ -23,7 +23,8 @@ app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cor
 @app.get("/health")
 def health(db:Session=Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"status":"ok","database":"connected"}
+    database_type = engine.dialect.name
+    return {"status":"ok","database":"connected","database_type":database_type,"durable_storage":database_type=="postgresql"}
 
 @app.post("/api/auth/register")
 def register(body:RegisterIn,db:Session=Depends(get_db)):
@@ -193,17 +194,41 @@ def delete_supplier(supplier_id:int,db:Session=Depends(get_db),user:User=Depends
     if not supplier: raise HTTPException(404,"Supplier not found")
     db.delete(supplier);db.commit();return {"ok":True}
 
+@app.get("/api/ai/status")
+def ai_status(user:User=Depends(current_user)):
+    return {"configured":bool(settings.openai_api_key),"provider":"OpenAI","model":settings.openai_model if settings.openai_api_key else None}
+
+@app.get("/api/ai/history")
+def ai_history(db:Session=Depends(get_db),user:User=Depends(current_user)):
+    rows=db.query(ChatMessage).filter_by(user_id=user.id).order_by(ChatMessage.created_at.desc(),ChatMessage.id.desc()).limit(30).all()
+    return [{"role":m.role,"content":m.content,"created_at":m.created_at.isoformat()} for m in reversed(rows)]
+
 @app.post("/api/ai/chat")
 def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
-    summary=dashboard_summary(db,user);inventory=inventory_calculations(db,user)
     if not settings.openai_api_key:
-        return {"configured":False,"answer":"Configure OPENAI_API_KEY on the backend to enable natural-language answers.","context":{"summary":summary,"inventory":inventory[:20]}}
+        return {"configured":False,"answer":"The AI provider is not connected yet. Add OPENAI_API_KEY in Render → supply-chain-demand-api → Environment, then redeploy."}
     try:
         from openai import OpenAI
-        client=OpenAI(api_key=settings.openai_api_key)
-        response=client.chat.completions.create(model="gpt-4o-mini",temperature=0.2,messages=[{"role":"system","content":"You are a supply-chain analyst. Use only the supplied application JSON. Never invent figures; say when data is unavailable."},{"role":"user","content":json.dumps({"question":body.question,"summary":summary,"inventory":inventory},default=str)}])
-        return {"configured":True,"answer":response.choices[0].message.content}
-    except Exception: raise HTTPException(502,"AI provider request failed; verify OPENAI_API_KEY and provider status")
+        summary=dashboard_summary(db,user)
+        inventory=inventory_calculations(db,user)
+        supplier_rows=[{"supplier_id":s.supplier_id,"name":s.name,"lead_time":s.lead_time,"reliability":s.reliability} for s in db.query(Supplier).filter_by(user_id=user.id).limit(30).all()]
+        forecast_rows=[{"product_id":f.product_id,"date":f.forecast_date.isoformat(),"predicted_demand":f.predicted_demand,"model":f.model_name} for f in db.query(Forecast).filter_by(user_id=user.id).order_by(Forecast.forecast_date).limit(60).all()]
+        prior=db.query(ChatMessage).filter_by(user_id=user.id).order_by(ChatMessage.created_at.desc(),ChatMessage.id.desc()).limit(8).all()
+        messages=[{"role":"system","content":"You are SupplyChain AI, an expert demand planning and inventory analyst. Answer clearly and practically. Use only the user's supplied dashboard context and conversation. Never invent numbers, stock levels, suppliers, forecasts, or API actions. If data is missing, say what should be uploaded or configured. Distinguish actual historical sales from predicted demand and estimated inventory."}]
+        messages.extend([{"role":m.role,"content":m.content} for m in reversed(prior) if m.role in ("user","assistant")])
+        context={"dashboard":summary,"inventory_recommendations":inventory[:30],"suppliers":supplier_rows,"forecasts":forecast_rows}
+        messages.append({"role":"user","content":"Application context (JSON): "+json.dumps(context,default=str)+"\n\nQuestion: "+body.question})
+        client=OpenAI(api_key=settings.openai_api_key,timeout=settings.openai_timeout_seconds,max_retries=1)
+        response=client.chat.completions.create(model=settings.openai_model,temperature=0.2,messages=messages)
+        answer=(response.choices[0].message.content or "I couldn't produce an answer. Please try again.").strip()
+        db.add(ChatMessage(user_id=user.id,role="user",content=body.question[:8000]))
+        db.add(ChatMessage(user_id=user.id,role="assistant",content=answer[:8000]))
+        db.commit()
+        return {"configured":True,"provider":"OpenAI","model":settings.openai_model,"answer":answer}
+    except Exception as exc:
+        db.rollback()
+        # Do not return provider internals, request headers, or credentials to the browser.
+        raise HTTPException(502,"OpenAI request failed. Check API key validity, API billing/credits, model access, and provider status.")
 
 
 @app.get("/api/purchase-orders")
