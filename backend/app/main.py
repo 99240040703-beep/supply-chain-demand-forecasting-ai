@@ -102,7 +102,9 @@ def import_uci_online_retail(db:Session=Depends(get_db),user:User=Depends(curren
     clean=clean[clean["StockCode"].isin(top_codes)].copy()
     clean["Date"]=clean["InvoiceDate"].dt.normalize()
     grouped=clean.groupby(["StockCode","Date"],as_index=False).agg(Quantity_Sold=("Quantity","sum"),Product_Name=("Description",lambda x: str(x.mode().iloc[0]) if not x.mode().empty else str(x.iloc[0])))
-    price=clean.groupby("StockCode").apply(lambda g: float((g["Quantity"]*g["UnitPrice"]).sum()/g["Quantity"].sum()),include_groups=False).to_dict()
+    clean["_line_value"]=clean["Quantity"]*clean["UnitPrice"]
+    price_stats=clean.groupby("StockCode").agg(_qty=("Quantity","sum"),_value=("_line_value","sum"))
+    price=(price_stats["_value"]/price_stats["_qty"]).to_dict()
     last_day=grouped["Date"].max()
     rows=[]
     for pid,g in grouped.groupby("StockCode"):
