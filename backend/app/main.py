@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from .database import Base, engine, get_db
-from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder
+from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder, ForecastMetric
 from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn, PurchaseOrderIn, PurchaseOrderStatusIn
 from .security import hash_password, verify_password, create_token, current_user
 from .config import settings
@@ -80,6 +80,8 @@ def train(body:ForecastIn,db:Session=Depends(get_db),user:User=Depends(current_u
     if not predictions: raise HTTPException(422,"At least 40 days of history are required for each product")
     db.query(Forecast).filter_by(user_id=user.id).delete()
     for item in predictions: db.add(Forecast(user_id=user.id,product_id=item["product_id"],forecast_date=date.fromisoformat(item["date"]),predicted_demand=item["predicted_demand"],model_name=item["model"]))
+    db.query(ForecastMetric).filter_by(user_id=user.id).delete()
+    for metric in metrics: db.add(ForecastMetric(user_id=user.id,product_id=metric["product_id"],model_name=metric["model"],mae=metric["mae"],rmse=metric["rmse"],wape=metric["wape"]))
     db.commit()
     return {"predictions":predictions,"metrics":metrics,"selected_model":", ".join(sorted({p["model"] for p in predictions})),"forecast_count":len(predictions)}
 
@@ -89,7 +91,7 @@ def forecast_history(db:Session=Depends(get_db),user:User=Depends(current_user))
 
 @app.get("/api/forecast/metrics")
 def forecast_metrics(db:Session=Depends(get_db),user:User=Depends(current_user)):
-    return {"metrics":[],"message":"Train a model to generate validation metrics."}
+    return [{"product_id":m.product_id,"model":m.model_name,"mae":m.mae,"rmse":m.rmse,"wape":m.wape,"created_at":m.created_at.isoformat()} for m in db.query(ForecastMetric).filter_by(user_id=user.id).order_by(ForecastMetric.product_id).all()]
 
 @app.get("/api/dashboard/summary")
 def dashboard_summary(db:Session=Depends(get_db),user:User=Depends(current_user)):
