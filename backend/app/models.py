@@ -64,3 +64,14 @@ class PurchaseOrder(Base):
     status: Mapped[str] = mapped_column(String(24), default="DRAFT")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class ForecastMetric(Base):
+    __tablename__ = "forecast_metrics"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[str] = mapped_column(String(80), index=True)
+    model_name: Mapped[str] = mapped_column(String(80))
+    mae: Mapped[float] = mapped_column(Float)
+    rmse: Mapped[float] = mapped_column(Float)
+    wape: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
