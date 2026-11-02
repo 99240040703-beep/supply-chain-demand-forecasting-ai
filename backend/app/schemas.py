@@ -17,3 +17,13 @@ class ChatIn(BaseModel):
 class ForecastIn(BaseModel):
     days: int = Field(default=30, ge=7, le=90)
     product_id: str | None = None
+
+from typing import Literal
+
+class PurchaseOrderIn(BaseModel):
+    product_id: str
+    quantity: int = Field(ge=1, le=1000000)
+    supplier_id: str | None = None
+
+class PurchaseOrderStatusIn(BaseModel):
+    status: Literal["SUBMITTED", "APPROVED", "RECEIVED", "CANCELLED"]
