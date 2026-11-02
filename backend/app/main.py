@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 from io import BytesIO
+import zipfile
+import urllib.request
 import json
 import pandas as pd
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
@@ -71,6 +73,54 @@ def sample_dataset():
             rows.append({"Date":(date.today()-timedelta(days=119-i)).isoformat(),"Product_ID":f"SKU-{p:03}","Product_Name":f"Product {p}","Category":["Electronics","Home","Office"][p-1],"Quantity_Sold":max(0,20+p*5+(i%7)*2),"Unit_Price":100+p*25,"Inventory_Level":120,"Lead_Time":7+p,"Supplier_ID":f"SUP-{p:02}","Warehouse_ID":"WH-01"})
     out=BytesIO();pd.DataFrame(rows).to_csv(out,index=False);out.seek(0)
     return StreamingResponse(out,media_type="text/csv",headers={"Content-Disposition":"attachment; filename=sample_supply_chain.csv"})
+
+@app.post("/api/datasets/uci-online-retail/import")
+def import_uci_online_retail(db:Session=Depends(get_db),user:User=Depends(current_user)):
+    """Import real UCI Online Retail transactions; stock and supplier fields are explicitly estimated."""
+    source_url="https://archive.ics.uci.edu/static/public/352/online+retail.zip"
+    try:
+        request=urllib.request.Request(source_url,headers={"User-Agent":"SupplyChainAI/1.0 (educational dataset import)"})
+        with urllib.request.urlopen(request,timeout=90) as response:
+            archive_bytes=response.read()
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+            workbook=next((n for n in archive.namelist() if n.lower().endswith(".xlsx")),None)
+            if not workbook: raise ValueError("UCI archive did not contain the expected Excel workbook")
+            with archive.open(workbook) as xlsx:
+                raw=pd.read_excel(xlsx,usecols=["InvoiceNo","StockCode","Description","Quantity","InvoiceDate","UnitPrice"],engine="openpyxl")
+    except Exception as exc:
+        raise HTTPException(502,"Could not download the UCI public dataset. You can download Online Retail.xlsx from https://archive.ics.uci.edu/dataset/352/online+retail and upload it here. Details: "+str(exc)[:240])
+    raw["InvoiceNo"]=raw["InvoiceNo"].astype(str)
+    raw["InvoiceDate"]=pd.to_datetime(raw["InvoiceDate"],errors="coerce")
+    raw["Quantity"]=pd.to_numeric(raw["Quantity"],errors="coerce")
+    raw["UnitPrice"]=pd.to_numeric(raw["UnitPrice"],errors="coerce")
+    clean=raw.dropna(subset=["InvoiceDate","StockCode","Description","Quantity","UnitPrice"]).copy()
+    clean=clean[~clean["InvoiceNo"].str.upper().str.startswith("C")]
+    clean=clean[(clean["Quantity"]>0)&(clean["UnitPrice"]>0)]
+    clean["StockCode"]=clean["StockCode"].astype(str).str.strip()
+    clean=clean[clean["StockCode"].ne("")]
+    top_codes=clean.groupby("StockCode")["Quantity"].sum().nlargest(20).index
+    clean=clean[clean["StockCode"].isin(top_codes)].copy()
+    clean["Date"]=clean["InvoiceDate"].dt.normalize()
+    grouped=clean.groupby(["StockCode","Date"],as_index=False).agg(Quantity_Sold=("Quantity","sum"),Product_Name=("Description",lambda x: str(x.mode().iloc[0]) if not x.mode().empty else str(x.iloc[0])))
+    price=clean.groupby("StockCode").apply(lambda g: float((g["Quantity"]*g["UnitPrice"]).sum()/g["Quantity"].sum()),include_groups=False).to_dict()
+    last_day=grouped["Date"].max()
+    rows=[]
+    for pid,g in grouped.groupby("StockCode"):
+        avg=float(g.tail(30)["Quantity_Sold"].mean())
+        rows.extend({"Date":r.Date,"Product_ID":str(pid),"Product_Name":r.Product_Name,"Category":"Giftware","Quantity_Sold":float(r.Quantity_Sold),"Unit_Price":round(price.get(pid,0),2),"Inventory_Level":max(0,int(round(avg*14))),"Lead_Time":7,"Supplier_ID":"ESTIMATED-SUPPLIER","Warehouse_ID":"UCI-RETAIL"} for r in g.itertuples(index=False))
+    imported=preprocess(pd.DataFrame(rows))
+    for pid,group in imported.groupby("Product_ID"):
+        row=group.iloc[-1]
+        product=db.query(Product).filter_by(user_id=user.id,product_id=str(pid)).first()
+        values={"name":str(row.Product_Name),"category":"Giftware","unit_price":float(row.Unit_Price),"inventory_level":int(row.Inventory_Level),"lead_time":7,"supplier_id":"ESTIMATED-SUPPLIER","warehouse_id":"UCI-RETAIL"}
+        if product:
+            for key,value in values.items(): setattr(product,key,value)
+        else: db.add(Product(user_id=user.id,product_id=str(pid),**values))
+        db.query(Sale).filter_by(user_id=user.id,product_id=str(pid)).delete()
+    for row in imported.itertuples(index=False):
+        db.add(Sale(user_id=user.id,product_id=str(row.Product_ID),date=row.Date.date(),quantity_sold=float(row.Quantity_Sold),unit_price=float(row.Unit_Price)))
+    db.commit()
+    return {"source":"UCI Online Retail (Chen, 2015)","license":"CC BY 4.0","source_url":"https://doi.org/10.24432/C5BW33","source_transactions_used":int(len(clean)),"rows_imported":int(len(imported)),"products":int(imported.Product_ID.nunique()),"date_start":imported.Date.min().date().isoformat(),"date_end":imported.Date.max().date().isoformat(),"inventory_note":"Inventory levels and supplier identifiers are demo estimates; the UCI source contains transaction sales, not stock-on-hand or supplier records."}
 
 @app.post("/api/forecast/train")
 def train(body:ForecastIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
