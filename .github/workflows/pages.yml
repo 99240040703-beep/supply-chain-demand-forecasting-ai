@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "frontend/**"
+      - "backend/app/static/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 permissions:
@@ -19,26 +19,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm install
-      - name: Build
-        working-directory: frontend
-        env:
-          VITE_API_URL: https://supply-chain-demand-api.onrender.com
-        run: npm run build
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Prepare dashboard artifact
+        run: |
+          mkdir -p dist
+          sed 's|const API="";|const API="https://supply-chain-demand-api.onrender.com";|' backend/app/static/index.html > dist/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: frontend/dist
+          path: dist
   deploy:
     environment:
       name: github-pages
