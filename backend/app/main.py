@@ -149,6 +149,41 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
         return {"configured":True,"answer":response.choices[0].message.content}
     except Exception: raise HTTPException(502,"AI provider request failed; verify OPENAI_API_KEY and provider status")
 
+
+@app.get("/api/purchase-orders")
+def list_purchase_orders(db:Session=Depends(get_db),user:User=Depends(current_user)):
+    from .models import PurchaseOrder
+    rows=db.query(PurchaseOrder).filter_by(user_id=user.id).order_by(PurchaseOrder.created_at.desc()).all()
+    return [{"id":p.id,"product_id":p.product_id,"supplier_id":p.supplier_id,"quantity":p.quantity,"unit_cost":p.unit_cost,"total_cost":round(p.quantity*p.unit_cost,2),"status":p.status,"created_at":p.created_at.isoformat()} for p in rows]
+
+@app.post("/api/purchase-orders")
+def create_purchase_order(body:PurchaseOrderIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
+    from .models import PurchaseOrder
+    product=db.query(Product).filter_by(user_id=user.id,product_id=body.product_id).first()
+    if not product: raise HTTPException(404,"Product not found")
+    if body.supplier_id and not db.query(Supplier).filter_by(user_id=user.id,supplier_id=body.supplier_id).first():
+        raise HTTPException(404,"Supplier not found")
+    order=PurchaseOrder(user_id=user.id,product_id=body.product_id,supplier_id=body.supplier_id,quantity=body.quantity,unit_cost=product.unit_price,status="DRAFT")
+    db.add(order);db.commit();db.refresh(order)
+    return {"id":order.id,"status":order.status,"total_cost":round(order.quantity*order.unit_cost,2)}
+
+@app.patch("/api/purchase-orders/{order_id}/status")
+def update_purchase_order_status(order_id:int,body:PurchaseOrderStatusIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
+    from .models import PurchaseOrder
+    order=db.query(PurchaseOrder).filter_by(id=order_id,user_id=user.id).first()
+    if not order: raise HTTPException(404,"Purchase order not found")
+    allowed={"DRAFT":{"SUBMITTED","CANCELLED"},"SUBMITTED":{"APPROVED","CANCELLED"},"APPROVED":{"RECEIVED","CANCELLED"},"RECEIVED":set(),"CANCELLED":set()}
+    if body.status not in allowed.get(order.status,set()): raise HTTPException(409,f"Cannot change status from {order.status} to {body.status}")
+    if body.status=="RECEIVED":
+        product=db.query(Product).filter_by(user_id=user.id,product_id=order.product_id).first()
+        if product: product.inventory_level += order.quantity
+    order.status=body.status;db.commit()
+    return {"id":order.id,"status":order.status}
+
+@app.get("/api/alerts")
+def alerts(db:Session=Depends(get_db),user:User=Depends(current_user)):
+    return [dict(item, severity="critical" if item["status"]=="REORDER" else "warning") for item in inventory_calculations(db,user) if item["status"]!="HEALTHY"]
+
 @app.get("/api/reports/inventory")
 def inventory_report(db:Session=Depends(get_db),user:User=Depends(current_user)):
     out=BytesIO();pd.DataFrame(inventory_calculations(db,user)).to_csv(out,index=False);out.seek(0)
