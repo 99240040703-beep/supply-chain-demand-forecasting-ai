@@ -1,6 +1,6 @@
 # Supply Chain Demand Forecasting & Inventory Optimization AI
 
-Full-stack supply-chain analytics application. The current release includes a FastAPI service, React/Vite dashboard, CSV ingestion, chronological ML forecasting, inventory reorder calculations, supplier APIs and optional OpenAI assistance.
+Full-stack supply-chain analytics application with an interactive browser dashboard, FastAPI API, CSV/XLSX ingestion, chronological ML forecasting, inventory optimization, supplier management, purchase-order workflow, alerts and optional OpenAI assistance.
 
 ## Deployment targets
 - Render single-service dashboard/API: `https://supply-chain-demand-api.onrender.com/`
@@ -45,7 +45,7 @@ ROP = average daily demand × lead time + safety stock. Safety stock uses observ
 The dashboard supports supplier management, inventory alerts, draft purchase orders, submission, approval, receipt and cancellation. Receiving an approved order adds its quantity to the product stock. Forecast validation metrics (MAE, RMSE, WAPE) are saved per user and exposed in the Forecasting screen.
 
 ## Environment
-See `backend/.env.example`. Set `DATABASE_URL`, `SECRET_KEY`, `CORS_ORIGINS`, optional `OPENAI_API_KEY` on Render, and `VITE_API_URL` on Vercel. Never commit secrets.
+See `backend/.env.example`. Set `DATABASE_URL` to a dedicated PostgreSQL instance, `SECRET_KEY` to a strong random value, `CORS_ORIGINS` to the frontend origin, and optionally `OPENAI_API_KEY` on Render. Never commit secrets.
 
 ## Limitations
-This is an initial working foundation, not a certified enterprise system. Alembic migrations, durable background jobs, purchase-order approval lifecycle, supplier delivery events, advanced notifications, refresh-token revocation, rate limiting, Excel/PDF exports and expanded integration tests remain future work. Free Render databases are time-limited; configure a durable database before production business use.
+This is a functional project/demo foundation, not a certified enterprise system. The current Render setup uses SQLite unless a dedicated PostgreSQL `DATABASE_URL` is supplied; SQLite data on a free Render service can be lost when the instance is replaced. Before real business use, connect durable PostgreSQL storage, add Alembic migrations, refresh-token revocation, rate limiting, supplier delivery integrations, advanced notifications and operational monitoring. Purchase orders currently provide a basic draft → submitted → approved → received/cancelled workflow.
