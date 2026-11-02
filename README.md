@@ -2,6 +2,11 @@
 
 Full-stack supply-chain analytics application. The current release includes a FastAPI service, React/Vite dashboard, CSV ingestion, chronological ML forecasting, inventory reorder calculations, supplier APIs and optional OpenAI assistance.
 
+## Deployment targets
+- Render single-service dashboard/API: `https://supply-chain-demand-api.onrender.com/`
+- GitHub Pages frontend (automated workflow): `https://99240040703-beep.github.io/supply-chain-demand-forecasting-ai/`
+- API health: `/health`; interactive API docs: `/docs`
+
 ## Stack
 - Frontend: React, TypeScript, Vite, Recharts, Lucide
 - Backend: FastAPI, SQLAlchemy, Pandas, scikit-learn
@@ -35,6 +40,9 @@ Daily product demand is aggregated before time-series feature creation. Validati
 
 ## Inventory
 ROP = average daily demand × lead time + safety stock. Safety stock uses observed daily demand variation. The recommended order quantity targets 30 days of demand. This is an explainable baseline and should be tuned for supplier lead-time variation, service level, MOQ and open POs before operational use.
+
+## Purchase orders and alerts
+The dashboard supports supplier management, inventory alerts, draft purchase orders, submission, approval, receipt and cancellation. Receiving an approved order adds its quantity to the product stock. Forecast validation metrics (MAE, RMSE, WAPE) are saved per user and exposed in the Forecasting screen.
 
 ## Environment
 See `backend/.env.example`. Set `DATABASE_URL`, `SECRET_KEY`, `CORS_ORIGINS`, optional `OPENAI_API_KEY` on Render, and `VITE_API_URL` on Vercel. Never commit secrets.
