@@ -56,6 +56,8 @@ async def upload_dataset(file:UploadFile=File(...),db:Session=Depends(get_db),us
         if product:
             for key,value in values.items(): setattr(product,key,value)
         else: db.add(Product(user_id=user.id,product_id=str(pid),**values))
+    for pid in clean.Product_ID.astype(str).unique():
+        db.query(Sale).filter_by(user_id=user.id,product_id=pid).delete()
     for row in clean.itertuples(index=False):
         db.add(Sale(user_id=user.id,product_id=str(row.Product_ID),date=row.Date.date(),quantity_sold=float(row.Quantity_Sold),unit_price=float(row.Unit_Price)))
     db.commit()
