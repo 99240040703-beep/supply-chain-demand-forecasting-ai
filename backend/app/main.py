@@ -153,3 +153,11 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
 def inventory_report(db:Session=Depends(get_db),user:User=Depends(current_user)):
     out=BytesIO();pd.DataFrame(inventory_calculations(db,user)).to_csv(out,index=False);out.seek(0)
     return StreamingResponse(out,media_type="text/csv",headers={"Content-Disposition":"attachment; filename=inventory_recommendations.csv"})
+
+# Serve the browser dashboard from the same origin as the API. Keep this mount last
+# so that it never shadows /api routes or /health.
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+_frontend_dir = Path(__file__).resolve().parent / "static"
+if _frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
