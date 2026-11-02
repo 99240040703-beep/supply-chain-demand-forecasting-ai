@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from .database import Base, engine, get_db
-from .models import User, Product, Sale, Supplier, Forecast
+from .models import User, Product, Sale, Supplier, Forecast, PurchaseOrder
 from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn
 from .security import hash_password, verify_password, create_token, current_user
 from .config import settings
@@ -94,7 +94,7 @@ def forecast_metrics(db:Session=Depends(get_db),user:User=Depends(current_user))
 @app.get("/api/dashboard/summary")
 def dashboard_summary(db:Session=Depends(get_db),user:User=Depends(current_user)):
     products=db.query(Product).filter_by(user_id=user.id).all();sales=db.query(Sale).filter_by(user_id=user.id).all();forecasts=db.query(Forecast).filter_by(user_id=user.id).all()
-    return {"total_products":len(products),"total_inventory":sum(p.inventory_level for p in products),"total_sales":round(sum(s.quantity_sold*s.unit_price for s in sales),2),"units_sold":round(sum(s.quantity_sold for s in sales),2),"predicted_demand":round(sum(f.predicted_demand for f in forecasts),2),"low_stock_products":sum(p.inventory_level<=p.lead_time*2 for p in products),"pending_purchase_orders":0}
+    return {"total_products":len(products),"total_inventory":sum(p.inventory_level for p in products),"total_sales":round(sum(s.quantity_sold*s.unit_price for s in sales),2),"units_sold":round(sum(s.quantity_sold for s in sales),2),"predicted_demand":round(sum(f.predicted_demand for f in forecasts),2),"low_stock_products":sum(p.inventory_level<=p.lead_time*2 for p in products),"pending_purchase_orders":db.query(PurchaseOrder).filter(PurchaseOrder.user_id==user.id,PurchaseOrder.status.in_(["DRAFT","SUBMITTED","APPROVED"])).count()}
 
 @app.get("/api/dashboard/sales")
 def dashboard_sales(db:Session=Depends(get_db),user:User=Depends(current_user)):
