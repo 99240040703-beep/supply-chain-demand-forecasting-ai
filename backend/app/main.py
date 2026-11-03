@@ -200,12 +200,9 @@ def delete_supplier(supplier_id:int,db:Session=Depends(get_db),user:User=Depends
 @app.get("/api/ai/status")
 def ai_status(user:User=Depends(current_user)):
     return {
-        "configured":bool(settings.openai_api_key or settings.gemini_api_key),
-        "primary":"OpenAI",
-        "backup":"Gemini",
-        "openai_configured":bool(settings.openai_api_key),
-        "gemini_configured":bool(settings.gemini_api_key),
-        "model":settings.openai_model if settings.openai_api_key else (settings.gemini_model if settings.gemini_api_key else None),
+        "configured":bool(settings.groq_api_key),
+        "provider":"Groq",
+        "model":settings.groq_model if settings.groq_api_key else None,
     }
 
 
@@ -217,10 +214,9 @@ def ai_history(db:Session=Depends(get_db),user:User=Depends(current_user)):
 
 @app.post("/api/ai/chat")
 def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
-    if not settings.openai_api_key and not settings.gemini_api_key:
-        return {"configured":False,"answer":"No AI provider is connected. Add OPENAI_API_KEY and GEMINI_API_KEY in Render → supply-chain-demand-api → Environment. OpenAI is primary; Gemini is the automatic backup."}
+    if not settings.groq_api_key:
+        return {"configured":False,"answer":"Groq AI is not connected yet. Add GROQ_API_KEY in Render → supply-chain-demand-api → Environment. Create a key at https://console.groq.com/keys."}
     try:
-        from openai import OpenAI
         summary=dashboard_summary(db,user)
         inventory=inventory_calculations(db,user)
         supplier_rows=[{"supplier_id":s.supplier_id,"name":s.name,"lead_time":s.lead_time,"reliability":s.reliability} for s in db.query(Supplier).filter_by(user_id=user.id).limit(30).all()]
@@ -230,56 +226,37 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
         messages.extend([{"role":m.role,"content":m.content} for m in reversed(prior) if m.role in ("user","assistant")])
         context={"dashboard":summary,"inventory_recommendations":inventory[:30],"suppliers":supplier_rows,"forecasts":forecast_rows}
         messages.append({"role":"user","content":"Application context (JSON): "+json.dumps(context,default=str)+"\n\nQuestion: "+body.question})
-        answer=None
-        provider=None
-        model=None
-        errors=[]
-        # OpenAI is always attempted first when configured. Gemini is attempted only
-        # when OpenAI is unavailable or returns an error.
-        if settings.openai_api_key:
-            try:
-                client=OpenAI(api_key=settings.openai_api_key,timeout=settings.openai_timeout_seconds,max_retries=0)
-                response=client.chat.completions.create(model=settings.openai_model,temperature=0.2,messages=messages)
-                answer=(response.choices[0].message.content or "").strip()
-                if not answer: raise RuntimeError("OpenAI returned an empty response")
-                provider="OpenAI";model=settings.openai_model
-            except Exception as exc:
-                errors.append(("OpenAI",exc))
-                logger.warning("Primary AI provider failed type=%s status=%s code=%s",
-                               type(exc).__name__,getattr(exc,"status_code",None),getattr(exc,"code",None))
-        if answer is None and settings.gemini_api_key:
-            try:
-                client=OpenAI(api_key=settings.gemini_api_key,
-                              base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                              timeout=settings.gemini_timeout_seconds,max_retries=0)
-                response=client.chat.completions.create(model=settings.gemini_model,temperature=0.2,messages=messages)
-                answer=(response.choices[0].message.content or "").strip()
-                if not answer: raise RuntimeError("Gemini returned an empty response")
-                provider="Gemini (backup)";model=settings.gemini_model
-            except Exception as exc:
-                errors.append(("Gemini",exc))
-                logger.error("Backup AI provider failed type=%s status=%s code=%s",
-                             type(exc).__name__,getattr(exc,"status_code",None),getattr(exc,"code",None))
-        if answer is None:
-            if not settings.gemini_api_key and settings.openai_api_key:
-                raise HTTPException(503,"OpenAI is unavailable and Gemini backup is not configured. Add GEMINI_API_KEY in Render Environment.")
-            last_provider,last_error=errors[-1] if errors else ("AI",RuntimeError("No provider available"))
-            status=getattr(last_error,"status_code",None)
-            if status==401: detail=f"{last_provider} rejected its API key. Check the key in Render Environment."
-            elif status==429: detail=f"{last_provider} quota or rate limit reached. Check that provider's billing and usage limits."
-            elif status==404: detail=f"{last_provider} model is unavailable. Check the configured model name."
-            else: detail="Both AI providers failed or are unavailable. Check Render logs and both provider API keys."
+        payload=json.dumps({"model":settings.groq_model,"messages":messages,"temperature":0.2}).encode("utf-8")
+        request=urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
+            headers={"Authorization":"Bearer "+settings.groq_api_key,"Content-Type":"application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request,timeout=settings.groq_timeout_seconds) as response:
+                result=json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body=exc.read(1200).decode("utf-8","replace")
+            logger.warning("Groq API failure status=%s response=%s",exc.code,error_body[:500])
+            if exc.code==401: detail="Groq rejected the API key. Check GROQ_API_KEY in Render Environment."
+            elif exc.code==429: detail="Groq usage limit reached. Check your Groq account limits."
+            elif exc.code==404: detail="The configured Groq model is unavailable. Check the model ID."
+            else: detail="Groq AI is temporarily unavailable. Check Render logs and Groq service status."
             raise HTTPException(502,detail)
+        answer=(result.get("choices") or [{}])[0].get("message",{}).get("content","").strip()
+        if not answer:
+            raise HTTPException(502,"Groq returned an empty response. Please try again.")
         db.add(ChatMessage(user_id=user.id,role="user",content=body.question[:8000]))
         db.add(ChatMessage(user_id=user.id,role="assistant",content=answer[:8000]))
         db.commit()
-        return {"configured":True,"provider":provider,"model":model,"answer":answer}
+        return {"configured":True,"provider":"Groq","model":settings.groq_model,"answer":answer}
     except HTTPException:
         db.rollback()
         raise
     except Exception as exc:
         db.rollback()
-        logger.error("AI chat processing failure type=%s",type(exc).__name__)
+        logger.error("Groq chat processing failure type=%s",type(exc).__name__)
         raise HTTPException(502,"The AI request could not be completed. Check Render logs for safe diagnostics.")
 
 
