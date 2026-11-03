@@ -6,12 +6,9 @@ class Settings(BaseSettings):
     secret_key: str = "CHANGE_ME"
     access_token_minutes: int = 1440
     cors_origins: str = "http://localhost:5173"
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
-    openai_timeout_seconds: float = 35.0
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_timeout_seconds: float = 35.0
+    groq_api_key: str | None = None
+    groq_model: str = "qwen/qwen3.8-27b"
+    groq_timeout_seconds: float = 35.0
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()
