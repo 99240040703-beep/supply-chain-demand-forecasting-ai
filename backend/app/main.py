@@ -46,6 +46,39 @@ def login(body:LoginIn,db:Session=Depends(get_db)):
 @app.get("/api/auth/me")
 def me(user:User=Depends(current_user)): return {"id":user.id,"email":user.email}
 
+
+def dataset_analysis(frame:pd.DataFrame,rows_received:int|None=None,invalid_rows:int|None=None):
+    clean=preprocess(frame)
+    if clean.empty: raise ValueError("No valid rows available for analysis")
+    daily=clean.groupby(clean["Date"].dt.date)["Quantity_Sold"].sum().sort_index()
+    products=clean.groupby("Product_ID").agg(units=("Quantity_Sold","sum"),records=("Quantity_Sold","size"),first_sale=("Date","min"),last_sale=("Date","max"),avg_price=("Unit_Price","mean")).reset_index()
+    top=products.sort_values("units",ascending=False).head(12)
+    monthly=clean.assign(Month=clean["Date"].dt.to_period("M").astype(str)).groupby("Month")["Quantity_Sold"].sum().reset_index()
+    raw_missing=frame.isna().sum()
+    return {
+      "rows_received":int(rows_received if rows_received is not None else len(frame)),
+      "rows_analyzed":int(len(clean)),
+      "invalid_or_removed_rows":int(invalid_rows if invalid_rows is not None else max(0,len(frame)-len(clean))),
+      "products":int(clean["Product_ID"].nunique()),
+      "date_start":clean["Date"].min().date().isoformat(),
+      "date_end":clean["Date"].max().date().isoformat(),
+      "total_units_sold":round(float(clean["Quantity_Sold"].sum()),2),
+      "total_sales_value":round(float((clean["Quantity_Sold"]*clean["Unit_Price"]).sum()),2),
+      "average_daily_units":round(float(daily.mean()),2),
+      "days_with_sales":int(len(daily)),
+      "duplicate_rows":int(frame.duplicated().sum()),
+      "missing_values":{str(k):int(v) for k,v in raw_missing.items() if int(v)>0},
+      "monthly_trend":[{"month":str(r.Month),"units":round(float(r.Quantity_Sold),2)} for r in monthly.itertuples(index=False)],
+      "top_products":[{"product_id":str(r.Product_ID),"units":round(float(r.units),2),"records":int(r.records),"first_sale":r.first_sale.date().isoformat(),"last_sale":r.last_sale.date().isoformat(),"avg_price":round(float(r.avg_price),2)} for r in top.itertuples(index=False)]
+    }
+
+@app.get("/api/datasets/analysis")
+def get_dataset_analysis(db:Session=Depends(get_db),user:User=Depends(current_user)):
+    sales=db.query(Sale).filter_by(user_id=user.id).order_by(Sale.date).all()
+    if not sales: raise HTTPException(404,"No dataset has been uploaded yet.")
+    frame=pd.DataFrame([{"Date":s.date,"Product_ID":s.product_id,"Quantity_Sold":s.quantity_sold,"Unit_Price":s.unit_price} for s in sales])
+    return dataset_analysis(frame,rows_received=len(frame),invalid_rows=0)
+
 @app.post("/api/datasets/upload")
 async def upload_dataset(file:UploadFile=File(...),db:Session=Depends(get_db),user:User=Depends(current_user)):
     name=(file.filename or "").lower()
@@ -90,7 +123,7 @@ async def upload_dataset(file:UploadFile=File(...),db:Session=Depends(get_db),us
         db.rollback()
         logger.exception("Dataset database import failed filename=%s rows=%s",file.filename,len(clean))
         raise HTTPException(503,"Dataset was validated but could not be saved to the database. Check DATABASE_URL and Render database logs, then retry.")
-    return {"filename":file.filename,"rows_received":len(df),"rows_imported":len(clean),"products":int(clean.Product_ID.nunique()),"removed_or_invalid_rows":int(len(df)-len(clean)),"max_upload_mb":100}
+    return {"filename":file.filename,"rows_received":len(df),"rows_imported":len(clean),"products":int(clean.Product_ID.nunique()),"removed_or_invalid_rows":int(len(df)-len(clean)),"max_upload_mb":100,"analysis":dataset_analysis(df,rows_received=len(df),invalid_rows=len(df)-len(clean))}
 @app.get("/api/datasets/sample")
 def sample_dataset():
     rows=[]
@@ -148,7 +181,7 @@ def import_uci_online_retail(db:Session=Depends(get_db),user:User=Depends(curren
     for row in imported.itertuples(index=False):
         db.add(Sale(user_id=user.id,product_id=str(row.Product_ID),date=row.Date.date(),quantity_sold=float(row.Quantity_Sold),unit_price=float(row.Unit_Price)))
     db.commit()
-    return {"source":"UCI Online Retail (Chen, 2015)","license":"CC BY 4.0","source_url":"https://doi.org/10.24432/C5BW33","source_transactions_used":int(len(clean)),"rows_imported":int(len(imported)),"products":int(imported.Product_ID.nunique()),"date_start":imported.Date.min().date().isoformat(),"date_end":imported.Date.max().date().isoformat(),"inventory_note":"Inventory levels and supplier identifiers are demo estimates; the UCI source contains transaction sales, not stock-on-hand or supplier records."}
+    return {"source":"UCI Online Retail (Chen, 2015)","license":"CC BY 4.0","source_url":"https://doi.org/10.24432/C5BW33","source_transactions_used":int(len(clean)),"rows_imported":int(len(imported)),"products":int(imported.Product_ID.nunique()),"date_start":imported.Date.min().date().isoformat(),"date_end":imported.Date.max().date().isoformat(),"inventory_note":"Inventory levels and supplier identifiers are demo estimates; the UCI source contains transaction sales, not stock-on-hand or supplier records.","analysis":dataset_analysis(imported,rows_received=len(imported),invalid_rows=0)}
 
 @app.post("/api/forecast/train")
 def train(body:ForecastIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
