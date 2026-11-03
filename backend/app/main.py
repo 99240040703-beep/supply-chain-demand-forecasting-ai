@@ -199,17 +199,26 @@ def delete_supplier(supplier_id:int,db:Session=Depends(get_db),user:User=Depends
 
 @app.get("/api/ai/status")
 def ai_status(user:User=Depends(current_user)):
-    return {"configured":bool(settings.openai_api_key),"provider":"OpenAI","model":settings.openai_model if settings.openai_api_key else None}
+    return {
+        "configured":bool(settings.openai_api_key or settings.gemini_api_key),
+        "primary":"OpenAI",
+        "backup":"Gemini",
+        "openai_configured":bool(settings.openai_api_key),
+        "gemini_configured":bool(settings.gemini_api_key),
+        "model":settings.openai_model if settings.openai_api_key else (settings.gemini_model if settings.gemini_api_key else None),
+    }
+
 
 @app.get("/api/ai/history")
 def ai_history(db:Session=Depends(get_db),user:User=Depends(current_user)):
     rows=db.query(ChatMessage).filter_by(user_id=user.id).order_by(ChatMessage.created_at.desc(),ChatMessage.id.desc()).limit(30).all()
     return [{"role":m.role,"content":m.content,"created_at":m.created_at.isoformat()} for m in reversed(rows)]
 
+
 @app.post("/api/ai/chat")
 def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
-    if not settings.openai_api_key:
-        return {"configured":False,"answer":"The AI provider is not connected yet. Add OPENAI_API_KEY in Render → supply-chain-demand-api → Environment, then redeploy."}
+    if not settings.openai_api_key and not settings.gemini_api_key:
+        return {"configured":False,"answer":"No AI provider is connected. Add OPENAI_API_KEY and GEMINI_API_KEY in Render → supply-chain-demand-api → Environment. OpenAI is primary; Gemini is the automatic backup."}
     try:
         from openai import OpenAI
         summary=dashboard_summary(db,user)
@@ -221,31 +230,57 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
         messages.extend([{"role":m.role,"content":m.content} for m in reversed(prior) if m.role in ("user","assistant")])
         context={"dashboard":summary,"inventory_recommendations":inventory[:30],"suppliers":supplier_rows,"forecasts":forecast_rows}
         messages.append({"role":"user","content":"Application context (JSON): "+json.dumps(context,default=str)+"\n\nQuestion: "+body.question})
-        client=OpenAI(api_key=settings.openai_api_key,timeout=settings.openai_timeout_seconds,max_retries=1)
-        response=client.chat.completions.create(model=settings.openai_model,temperature=0.2,messages=messages)
-        answer=(response.choices[0].message.content or "I couldn't produce an answer. Please try again.").strip()
+        answer=None
+        provider=None
+        model=None
+        errors=[]
+        # OpenAI is always attempted first when configured. Gemini is attempted only
+        # when OpenAI is unavailable or returns an error.
+        if settings.openai_api_key:
+            try:
+                client=OpenAI(api_key=settings.openai_api_key,timeout=settings.openai_timeout_seconds,max_retries=0)
+                response=client.chat.completions.create(model=settings.openai_model,temperature=0.2,messages=messages)
+                answer=(response.choices[0].message.content or "").strip()
+                if not answer: raise RuntimeError("OpenAI returned an empty response")
+                provider="OpenAI";model=settings.openai_model
+            except Exception as exc:
+                errors.append(("OpenAI",exc))
+                logger.warning("Primary AI provider failed type=%s status=%s code=%s",
+                               type(exc).__name__,getattr(exc,"status_code",None),getattr(exc,"code",None))
+        if answer is None and settings.gemini_api_key:
+            try:
+                client=OpenAI(api_key=settings.gemini_api_key,
+                              base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                              timeout=settings.gemini_timeout_seconds,max_retries=0)
+                response=client.chat.completions.create(model=settings.gemini_model,temperature=0.2,messages=messages)
+                answer=(response.choices[0].message.content or "").strip()
+                if not answer: raise RuntimeError("Gemini returned an empty response")
+                provider="Gemini (backup)";model=settings.gemini_model
+            except Exception as exc:
+                errors.append(("Gemini",exc))
+                logger.error("Backup AI provider failed type=%s status=%s code=%s",
+                             type(exc).__name__,getattr(exc,"status_code",None),getattr(exc,"code",None))
+        if answer is None:
+            if not settings.gemini_api_key and settings.openai_api_key:
+                raise HTTPException(503,"OpenAI is unavailable and Gemini backup is not configured. Add GEMINI_API_KEY in Render Environment.")
+            last_provider,last_error=errors[-1] if errors else ("AI",RuntimeError("No provider available"))
+            status=getattr(last_error,"status_code",None)
+            if status==401: detail=f"{last_provider} rejected its API key. Check the key in Render Environment."
+            elif status==429: detail=f"{last_provider} quota or rate limit reached. Check that provider's billing and usage limits."
+            elif status==404: detail=f"{last_provider} model is unavailable. Check the configured model name."
+            else: detail="Both AI providers failed or are unavailable. Check Render logs and both provider API keys."
+            raise HTTPException(502,detail)
         db.add(ChatMessage(user_id=user.id,role="user",content=body.question[:8000]))
         db.add(ChatMessage(user_id=user.id,role="assistant",content=answer[:8000]))
         db.commit()
-        return {"configured":True,"provider":"OpenAI","model":settings.openai_model,"answer":answer}
+        return {"configured":True,"provider":provider,"model":model,"answer":answer}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
-        # Log safe diagnostics only; never log credentials, headers, or prompt contents.
-        logger.error("AI provider failure type=%s status=%s code=%s",
-                     type(exc).__name__, getattr(exc, "status_code", None),
-                     getattr(exc, "code", None))
-        status = getattr(exc, "status_code", None)
-        if status == 401:
-            detail = "OpenAI rejected the API key. Check that the key is active and belongs to the correct project."
-        elif status == 429:
-            detail = "OpenAI quota or rate limit reached. Check API billing and usage limits."
-        elif status == 404:
-            detail = "The configured OpenAI model was not found or is unavailable to this project."
-        elif status in (500, 502, 503, 504):
-            detail = "OpenAI is temporarily unavailable. Please retry shortly."
-        else:
-            detail = "The AI service could not complete the request. Check Render logs for the safe diagnostic entry."
-        raise HTTPException(502, detail)
+        logger.error("AI chat processing failure type=%s",type(exc).__name__)
+        raise HTTPException(502,"The AI request could not be completed. Check Render logs for safe diagnostics.")
 
 
 @app.get("/api/purchase-orders")
