@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: float = 35.0
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_timeout_seconds: float = 35.0
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()
