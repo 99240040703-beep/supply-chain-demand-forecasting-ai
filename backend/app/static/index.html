@@ -114,6 +114,68 @@ tbody tr:hover{background:rgba(98,146,220,.075)}
  *,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
 
+
+/* ===== Site-wide motion system ===== */
+:root{--motion-ease:cubic-bezier(.2,.75,.25,1)}
+body{background-size:180% 180%;animation:ambientShift 30s ease-in-out infinite alternate}
+.layout{animation:siteEnter .75s var(--motion-ease) both}
+.main{animation:mainEnter .65s var(--motion-ease) both}
+.brand .logo{animation:logoFloat 5s ease-in-out infinite}
+.nav button{will-change:transform}
+.nav button.active{animation:navActivate .35s var(--motion-ease) both}
+.top{animation:headerEnter .7s var(--motion-ease) both}
+.top .eyebrow{animation:eyebrowGlow 5s ease-in-out infinite}
+#content{animation:contentEnter .5s var(--motion-ease) both}
+#content .cards>.card{animation:cardEnter .65s var(--motion-ease) both}
+#content .cards>.card:nth-child(2){animation-delay:.06s}
+#content .cards>.card:nth-child(3){animation-delay:.12s}
+#content .cards>.card:nth-child(4){animation-delay:.18s}
+#content .cards>.card:nth-child(5){animation-delay:.24s}
+#content .cards>.card:nth-child(6){animation-delay:.30s}
+#content>.panel,#content .grid2>.panel{animation:panelEnter .7s var(--motion-ease) both}
+#content>.panel:nth-of-type(2){animation-delay:.1s}
+#content>.panel:nth-of-type(3){animation-delay:.18s}
+.card:after,.panel:after{content:"";position:absolute;inset:-120% -60%;pointer-events:none;background:linear-gradient(110deg,transparent 43%,rgba(255,255,255,.075) 50%,transparent 57%);transform:translateX(-55%) rotate(8deg);opacity:0}
+.card:hover:after,.panel:hover:after{opacity:1;animation:surfaceShine 1.15s ease}
+button:not(:disabled){position:relative;overflow:hidden}
+button:not(:disabled):active{transform:scale(.97)}
+button.primary{background-size:180% 180%;animation:buttonGradient 8s ease infinite}
+.chart .bar{transform-origin:bottom;animation:barRise 1.1s var(--motion-ease) both,barBreath 5s ease-in-out 1.2s infinite alternate}
+.chart .bar:nth-child(3n){animation-delay:.08s,1.28s}
+.chart .bar:nth-child(3n + 1){animation-delay:.16s,1.36s}
+.pill{animation:pillAppear .45s var(--motion-ease) both}
+.notice:not(.hidden){animation:noticeEnter .35s var(--motion-ease) both}
+.upload{position:relative;overflow:hidden}
+.upload:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent,rgba(117,167,255,.09),transparent);transform:translateX(-120%);animation:uploadSweep 6s ease-in-out infinite}
+.chatmsg{animation:messageEnter .35s var(--motion-ease) both}
+.authbox{animation:authEnter .8s var(--motion-ease) both}
+.auth .logo{animation:logoFloat 4s ease-in-out infinite}
+.foot{animation:fadeIn 1.2s ease both}
+@keyframes siteEnter{from{opacity:0}to{opacity:1}}
+@keyframes mainEnter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes headerEnter{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes contentEnter{from{opacity:.35;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes cardEnter{from{opacity:0;transform:translateY(18px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes panelEnter{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-3px) rotate(-2deg)}}
+@keyframes navActivate{from{opacity:.6;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
+@keyframes eyebrowGlow{0%,100%{text-shadow:0 0 0 rgba(117,167,255,0)}50%{text-shadow:0 0 14px rgba(117,167,255,.38)}}
+@keyframes surfaceShine{0%{transform:translateX(-55%) rotate(8deg)}100%{transform:translateX(55%) rotate(8deg)}}
+@keyframes buttonGradient{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes barBreath{from{filter:brightness(.96)}to{filter:brightness(1.16)}}
+@keyframes pillAppear{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:scale(1)}}
+@keyframes noticeEnter{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:translateY(0)}}
+@keyframes uploadSweep{0%,65%,100%{transform:translateX(-120%)}82%{transform:translateX(120%)}}
+@keyframes messageEnter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+@keyframes authEnter{from{opacity:0;transform:translateY(22px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@media(max-width:720px){.layout,.main{animation-duration:.45s}#content .cards>.card{animation-duration:.5s}.card:hover{transform:none}}
+@media(prefers-reduced-motion:reduce){
+ body,.layout,.main,.top,#content,#content .cards>.card,#content>.panel,.authbox,.brand .logo,.auth .logo,.pill,.notice:not(.hidden),.chatmsg,.foot,button.primary,.chart .bar{animation:none!important}
+ .card,.panel,.nav button,button{transition:none!important}
+ .card:hover{transform:none!important}
+}
+
 </style></head><body><div id="root"></div>
 <script>
 const API="";let token=localStorage.getItem("sc_token")||"",page="Overview",summary=null,sales=[],forecasts=[],recommendations=[],suppliers=[],orders=[],alertsData=[],metrics=[],busy=false;
