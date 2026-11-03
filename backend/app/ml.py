@@ -7,9 +7,23 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 REQUIRED = {"Date", "Product_ID", "Quantity_Sold"}
 
 def preprocess(frame: pd.DataFrame) -> pd.DataFrame:
-    frame = frame.rename(columns={c: str(c).strip() for c in frame.columns}).copy()
+    frame = frame.copy()
+    def _header_key(value):
+        return "".join(ch for ch in str(value).strip().lower() if ch.isalnum())
+    aliases = {
+        "date": "Date",
+        "productid": "Product_ID", "sku": "Product_ID", "itemid": "Product_ID",
+        "quantitysold": "Quantity_Sold", "qtysold": "Quantity_Sold",
+        "unitsold": "Quantity_Sold", "salesquantity": "Quantity_Sold",
+    }
+    rename = {}
+    for column in frame.columns:
+        cleaned = str(column).strip()
+        rename[column] = aliases.get(_header_key(cleaned), cleaned)
+    frame = frame.rename(columns=rename)
     missing = REQUIRED - set(frame.columns)
-    if missing: raise ValueError("Missing required columns: " + ", ".join(sorted(missing)))
+    if missing:
+        raise ValueError("Missing required columns: " + ", ".join(sorted(missing)) + ". Accepted headers are Date, Product_ID (or SKU), and Quantity_Sold (or Qty_Sold / Units_Sold).")
     frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
     frame["Quantity_Sold"] = pd.to_numeric(frame["Quantity_Sold"], errors="coerce")
     frame["Product_ID"] = frame["Product_ID"].astype("string").str.strip()
