@@ -49,26 +49,48 @@ def me(user:User=Depends(current_user)): return {"id":user.id,"email":user.email
 @app.post("/api/datasets/upload")
 async def upload_dataset(file:UploadFile=File(...),db:Session=Depends(get_db),user:User=Depends(current_user)):
     name=(file.filename or "").lower()
-    if not name.endswith((".csv",".xlsx",".xls")): raise HTTPException(400,"Upload CSV or Excel")
-    raw=await file.read()
-    if len(raw)>15*1024*1024: raise HTTPException(413,"File exceeds 15 MB")
-    try: df=pd.read_csv(BytesIO(raw)) if name.endswith(".csv") else pd.read_excel(BytesIO(raw))
-    except Exception as exc: raise HTTPException(400,f"Could not read dataset: {exc}")
-    try: clean=preprocess(df)
-    except ValueError as exc: raise HTTPException(422,str(exc))
-    for pid,group in clean.groupby("Product_ID"):
-        row=group.iloc[-1]; product=db.query(Product).filter_by(user_id=user.id,product_id=str(pid)).first()
-        values={"name":str(row.Product_Name),"category":str(row.Category),"unit_price":float(row.Unit_Price),"inventory_level":int(row.Inventory_Level),"lead_time":max(1,int(row.Lead_Time)),"supplier_id":str(row.Supplier_ID),"warehouse_id":str(row.Warehouse_ID)}
-        if product:
-            for key,value in values.items(): setattr(product,key,value)
-        else: db.add(Product(user_id=user.id,product_id=str(pid),**values))
-    for pid in clean.Product_ID.astype(str).unique():
-        db.query(Sale).filter_by(user_id=user.id,product_id=pid).delete()
-    for row in clean.itertuples(index=False):
-        db.add(Sale(user_id=user.id,product_id=str(row.Product_ID),date=row.Date.date(),quantity_sold=float(row.Quantity_Sold),unit_price=float(row.Unit_Price)))
-    db.commit()
-    return {"filename":file.filename,"rows_received":len(df),"rows_imported":len(clean),"products":int(clean.Product_ID.nunique()),"removed_or_invalid_rows":int(len(df)-len(clean))}
-
+    if not name.endswith((".csv",".xlsx",".xls")):
+        raise HTTPException(400,"Upload a .csv, .xlsx, or .xls file.")
+    max_bytes=100*1024*1024
+    raw=await file.read(max_bytes+1)
+    if len(raw)>max_bytes:
+        raise HTTPException(413,"File exceeds the 100 MB upload limit. Split the dataset into smaller files.")
+    try:
+        df=pd.read_csv(BytesIO(raw)) if name.endswith(".csv") else pd.read_excel(BytesIO(raw))
+    except Exception:
+        logger.exception("Dataset parsing failed filename=%s size_bytes=%s",file.filename,len(raw))
+        raise HTTPException(400,"Could not read this dataset. Check that the CSV or Excel file is valid and not password-protected.")
+    try:
+        clean=preprocess(df)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+    if clean.empty:
+        raise HTTPException(422,"No valid sales rows were found. Check Date, Product_ID and Quantity_Sold.")
+    try:
+        for pid,group in clean.groupby("Product_ID",sort=False):
+            row=group.iloc[-1]
+            product=db.query(Product).filter_by(user_id=user.id,product_id=str(pid)).first()
+            values={"name":str(row.Product_Name),"category":str(row.Category),"unit_price":float(row.Unit_Price),"inventory_level":int(row.Inventory_Level),"lead_time":max(1,int(row.Lead_Time)),"supplier_id":str(row.Supplier_ID),"warehouse_id":str(row.Warehouse_ID)}
+            if product:
+                for key,value in values.items(): setattr(product,key,value)
+            else:
+                db.add(Product(user_id=user.id,product_id=str(pid),**values))
+        product_ids=clean.Product_ID.astype(str).unique().tolist()
+        for offset in range(0,len(product_ids),1000):
+            db.query(Sale).filter(Sale.user_id==user.id,Sale.product_id.in_(product_ids[offset:offset+1000])).delete(synchronize_session=False)
+        batch=[]
+        for row in clean.itertuples(index=False):
+            batch.append({"user_id":user.id,"product_id":str(row.Product_ID),"date":row.Date.date(),"quantity_sold":float(row.Quantity_Sold),"unit_price":float(row.Unit_Price)})
+            if len(batch)>=5000:
+                db.bulk_insert_mappings(Sale,batch)
+                batch=[]
+        if batch: db.bulk_insert_mappings(Sale,batch)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Dataset database import failed filename=%s rows=%s",file.filename,len(clean))
+        raise HTTPException(503,"Dataset was validated but could not be saved to the database. Check DATABASE_URL and Render database logs, then retry.")
+    return {"filename":file.filename,"rows_received":len(df),"rows_imported":len(clean),"products":int(clean.Product_ID.nunique()),"removed_or_invalid_rows":int(len(df)-len(clean)),"max_upload_mb":100}
 @app.get("/api/datasets/sample")
 def sample_dataset():
     rows=[]
@@ -92,7 +114,7 @@ def import_uci_online_retail(db:Session=Depends(get_db),user:User=Depends(curren
             with archive.open(workbook) as xlsx:
                 raw=pd.read_excel(xlsx,usecols=["InvoiceNo","StockCode","Description","Quantity","InvoiceDate","UnitPrice"],engine="openpyxl")
     except Exception as exc:
-        raise HTTPException(502,"Could not download the UCI public dataset. You can download Online Retail.xlsx from https://archive.ics.uci.edu/dataset/352/online+retail and upload it here. Details: "+str(exc)[:240])
+        raise HTTPException(503,"The public UCI dataset source is temporarily unavailable. You can download Online Retail.xlsx from https://archive.ics.uci.edu/dataset/352/online+retail and upload it here. Details: "+str(exc)[:240])
     raw["InvoiceNo"]=raw["InvoiceNo"].astype(str)
     raw["InvoiceDate"]=pd.to_datetime(raw["InvoiceDate"],errors="coerce")
     raw["Quantity"]=pd.to_numeric(raw["Quantity"],errors="coerce")
