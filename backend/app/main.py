@@ -230,7 +230,7 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
         request=urllib.request.Request(
             "https://api.groq.com/openai/v1/chat/completions",
             data=payload,
-            headers={"Authorization":"Bearer "+settings.groq_api_key,"Content-Type":"application/json"},
+            headers={"Authorization":"Bearer "+settings.groq_api_key,"Content-Type":"application/json","Accept":"application/json","User-Agent":"SupplyChainForecastingAI/1.0"},
             method="POST",
         )
         try:
