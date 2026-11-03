@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import logging
 from io import BytesIO
 import zipfile
 import urllib.request
@@ -15,6 +16,8 @@ from .schemas import RegisterIn, LoginIn, SupplierIn, ChatIn, ForecastIn, Purcha
 from .security import hash_password, verify_password, create_token, current_user
 from .config import settings
 from .ml import preprocess, train_and_forecast
+
+logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 app=FastAPI(title="Supply Chain Forecasting AI",version="1.0.0")
@@ -227,8 +230,22 @@ def ai_chat(body:ChatIn,db:Session=Depends(get_db),user:User=Depends(current_use
         return {"configured":True,"provider":"OpenAI","model":settings.openai_model,"answer":answer}
     except Exception as exc:
         db.rollback()
-        # Do not return provider internals, request headers, or credentials to the browser.
-        raise HTTPException(502,"OpenAI request failed. Check API key validity, API billing/credits, model access, and provider status.")
+        # Log safe diagnostics only; never log credentials, headers, or prompt contents.
+        logger.error("AI provider failure type=%s status=%s code=%s",
+                     type(exc).__name__, getattr(exc, "status_code", None),
+                     getattr(exc, "code", None))
+        status = getattr(exc, "status_code", None)
+        if status == 401:
+            detail = "OpenAI rejected the API key. Check that the key is active and belongs to the correct project."
+        elif status == 429:
+            detail = "OpenAI quota or rate limit reached. Check API billing and usage limits."
+        elif status == 404:
+            detail = "The configured OpenAI model was not found or is unavailable to this project."
+        elif status in (500, 502, 503, 504):
+            detail = "OpenAI is temporarily unavailable. Please retry shortly."
+        else:
+            detail = "The AI service could not complete the request. Check Render logs for the safe diagnostic entry."
+        raise HTTPException(502, detail)
 
 
 @app.get("/api/purchase-orders")
