@@ -6,36 +6,108 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 REQUIRED = {"Date", "Product_ID", "Quantity_Sold"}
 
+# Normalize common names from retail, ERP, POS, and UCI-style sales exports.
+HEADER_ALIASES = {
+    "date": "Date", "invoicedate": "Date", "invoicedatetime": "Date",
+    "orderdate": "Date", "transactiondate": "Date", "salesdate": "Date",
+    "productid": "Product_ID", "productcode": "Product_ID",
+    "sku": "Product_ID", "itemid": "Product_ID", "itemcode": "Product_ID",
+    "stockcode": "Product_ID", "materialid": "Product_ID",
+    "quantitysold": "Quantity_Sold", "qtysold": "Quantity_Sold",
+    "unitsold": "Quantity_Sold", "salesquantity": "Quantity_Sold",
+    "quantity": "Quantity_Sold", "qty": "Quantity_Sold",
+    "units": "Quantity_Sold", "soldquantity": "Quantity_Sold",
+    "unitprice": "Unit_Price", "price": "Unit_Price",
+    "sellingprice": "Unit_Price", "productname": "Product_Name",
+    "description": "Product_Name", "itemname": "Product_Name",
+    "category": "Category", "productcategory": "Category",
+    "inventorylevel": "Inventory_Level", "stock": "Inventory_Level",
+    "stockquantity": "Inventory_Level", "onhand": "Inventory_Level",
+    "leadtime": "Lead_Time", "supplierid": "Supplier_ID",
+    "warehouseid": "Warehouse_ID", "promotion": "Promotion",
+}
+
+def _header_key(value) -> str:
+    # Handles spaces, punctuation, underscores, hyphens, and UTF-8 BOM.
+    return "".join(ch for ch in str(value).replace("\ufeff", "").strip().lower() if ch.isalnum())
+
 def preprocess(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise ValueError("The uploaded dataset is empty. Add at least one sales row and try again.")
+
     frame = frame.copy()
-    def _header_key(value):
-        return "".join(ch for ch in str(value).strip().lower() if ch.isalnum())
-    aliases = {
-        "date": "Date",
-        "productid": "Product_ID", "sku": "Product_ID", "itemid": "Product_ID",
-        "quantitysold": "Quantity_Sold", "qtysold": "Quantity_Sold",
-        "unitsold": "Quantity_Sold", "salesquantity": "Quantity_Sold",
-    }
-    rename = {}
-    for column in frame.columns:
-        cleaned = str(column).strip()
-        rename[column] = aliases.get(_header_key(cleaned), cleaned)
+    # Ignore blank spreadsheet columns such as Unnamed: 0, but retain all useful columns.
+    frame = frame.loc[:, [not str(c).strip().lower().startswith("unnamed:") for c in frame.columns]]
+    rename = {column: HEADER_ALIASES.get(_header_key(column), str(column).replace("\ufeff", "").strip())
+              for column in frame.columns}
     frame = frame.rename(columns=rename)
+
+    # If a file contains both an alias and its canonical column, combine values
+    # rather than producing duplicate DataFrame column names.
+    if frame.columns.duplicated().any():
+        merged = {}
+        for name in dict.fromkeys(frame.columns):
+            columns = frame.loc[:, frame.columns == name]
+            merged[name] = columns.bfill(axis=1).iloc[:, 0] if columns.shape[1] > 1 else columns.iloc[:, 0]
+        frame = pd.DataFrame(merged, index=frame.index)
+
     missing = REQUIRED - set(frame.columns)
     if missing:
-        raise ValueError("Missing required columns: " + ", ".join(sorted(missing)) + ". Accepted headers are Date, Product_ID (or SKU), and Quantity_Sold (or Qty_Sold / Units_Sold).")
-    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
-    frame["Quantity_Sold"] = pd.to_numeric(frame["Quantity_Sold"], errors="coerce")
-    frame["Product_ID"] = frame["Product_ID"].astype("string").str.strip()
-    frame = frame.dropna(subset=["Date", "Product_ID", "Quantity_Sold"])
-    frame = frame[(frame["Product_ID"] != "") & (frame["Quantity_Sold"] >= 0)].drop_duplicates()
-    defaults = {"Product_Name":"Unknown product","Category":"Uncategorized","Unit_Price":0,"Inventory_Level":0,"Lead_Time":7,"Promotion":0,"Supplier_ID":"","Warehouse_ID":""}
+        accepted = (
+            "Date (InvoiceDate, OrderDate, TransactionDate), "
+            "Product_ID (SKU, ItemID, StockCode, ProductCode), and "
+            "Quantity_Sold (Quantity, Qty, Units, Qty_Sold, Units_Sold)."
+        )
+        raise ValueError("Missing required columns: " + ", ".join(sorted(missing)) +
+                         ". Accepted column names include " + accepted)
+
+    received = len(frame)
+    date_values = frame["Date"]
+    # Excel serial dates occasionally arrive in CSV exports as numbers.
+    if pd.api.types.is_numeric_dtype(date_values):
+        numeric_dates = pd.to_numeric(date_values, errors="coerce")
+        parsed_dates = pd.to_datetime(numeric_dates, unit="D", origin="1899-12-30", errors="coerce")
+    else:
+        parsed_dates = pd.to_datetime(date_values.astype("string").str.strip(), errors="coerce", dayfirst=False)
+        # Retry only values not parsed by the default month-first interpretation.
+        failed = parsed_dates.isna()
+        if failed.any():
+            parsed_dates.loc[failed] = pd.to_datetime(
+                date_values.loc[failed].astype("string").str.strip(), errors="coerce", dayfirst=True
+            )
+
+    quantities = pd.to_numeric(
+        frame["Quantity_Sold"].astype("string").str.replace(",", "", regex=False).str.strip(),
+        errors="coerce"
+    )
+    product_ids = frame["Product_ID"].astype("string").str.strip()
+    valid = parsed_dates.notna() & quantities.notna() & product_ids.notna() & product_ids.ne("")
+    # Negative quantities usually represent returns/credit notes; exclude them
+    # from demand forecasting but report them as removed rows in upload analysis.
+    valid &= quantities >= 0
+    frame = frame.loc[valid].copy()
+    frame["Date"] = parsed_dates.loc[valid]
+    frame["Quantity_Sold"] = quantities.loc[valid].astype(float)
+    frame["Product_ID"] = product_ids.loc[valid].astype(str)
+
+    defaults = {
+        "Product_Name": "Unknown product", "Category": "Uncategorized",
+        "Unit_Price": 0, "Inventory_Level": 0, "Lead_Time": 7,
+        "Promotion": 0, "Supplier_ID": "", "Warehouse_ID": ""
+    }
     for col, default in defaults.items():
-        if col not in frame: frame[col] = default
+        if col not in frame:
+            frame[col] = default
         frame[col] = frame[col].fillna(default)
-    for col in ("Unit_Price","Inventory_Level","Lead_Time","Promotion"):
+    for col in ("Unit_Price", "Inventory_Level", "Lead_Time", "Promotion"):
         frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(defaults[col])
-    return frame.sort_values("Date")
+    frame = frame.drop_duplicates().sort_values("Date")
+    if frame.empty:
+        raise ValueError(
+            f"No valid sales rows remain after validation (0 of {received} rows). "
+            "Check that dates are readable, product IDs are not blank, and quantities are numeric and non-negative."
+        )
+    return frame
 
 def _features(history: pd.Series, target_date: pd.Timestamp) -> dict:
     vals = {"dow":target_date.dayofweek,"month":target_date.month,"day":target_date.day,"quarter":target_date.quarter,"trend":len(history)}
